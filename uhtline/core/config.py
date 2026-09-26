@@ -146,6 +146,8 @@ class ThroughputEnvelope:
 
     intake_minimum_litres: float = 200.0
     intake_maximum_litres: float = 1200.0
+    intake_minimum_c: float = 1.0
+    intake_maximum_c: float = 10.0
     balance_minimum_litres: float = 150.0
     balance_maximum_litres: float = 900.0
     balance_capacity_litres: float = 1500.0
@@ -155,6 +157,8 @@ class ThroughputEnvelope:
     def validate(self) -> None:
         if self.intake_minimum_litres >= self.intake_maximum_litres:
             raise ValidationError("intake window is inverted", scope="throughput")
+        if self.intake_minimum_c >= self.intake_maximum_c:
+            raise ValidationError("intake cold-chain window is inverted", scope="throughput")
         if self.balance_maximum_litres > self.balance_capacity_litres:
             raise ValidationError("balance window exceeds tank capacity", scope="throughput")
         if self.aseptic_minimum_fill_litres <= 0 or self.aseptic_capacity_litres <= 0:
