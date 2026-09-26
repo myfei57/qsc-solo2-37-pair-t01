@@ -35,6 +35,7 @@ class BalanceTank:
         self._charging = False
         self._stopped = False
         self._last_action = ""
+        self._history: list[dict[str, Any]] = []
         self._load()
 
     def _load(self) -> None:
@@ -45,6 +46,7 @@ class BalanceTank:
         self._charging = bool(stored.payload.get("charging", False))
         self._stopped = bool(stored.payload.get("stopped", False))
         self._last_action = str(stored.payload.get("last_action", ""))
+        self._history = [dict(item) for item in stored.payload.get("history", [])]
 
     def persist(self) -> None:
         self.store.write(
@@ -54,6 +56,7 @@ class BalanceTank:
                 "charging": self._charging,
                 "stopped": self._stopped,
                 "last_action": self._last_action,
+                "history": self._history,
             },
         )
 
@@ -77,8 +80,8 @@ class BalanceTank:
             field_name="volume_litres",
             scope="throughput",
         )
-        projected = round(volume, 4)
-        if projected > envelope.balance_maximum_litres:
+        projected = round(self._level_litres + volume, 4)
+        if projected > envelope.balance_capacity_litres:
             raise RangeError(
                 "charge would overflow the balance tank",
                 field="volume_litres",
@@ -94,8 +97,15 @@ class BalanceTank:
         volume = float(volume_litres)
         if volume <= 0:
             raise RangeError("drain volume must be positive", field="volume_litres", value=volume)
-        self._level_litres = 0.0
-        self._charging = False
+        if volume > self._level_litres:
+            raise RangeError(
+                "drain exceeds the balance tank level",
+                field="volume_litres",
+                level_litres=self._level_litres,
+                requested_litres=volume,
+            )
+        self._level_litres = round(self._level_litres - volume, 4)
+        self._charging = self._level_litres > 0
         return self._commit("drain", volume, reason)
 
     def stop(self, *, reason: str) -> dict[str, Any]:
@@ -117,22 +127,13 @@ class BalanceTank:
             "timestamp": self.clock.timestamp(),
         }
         self._last_action = action
+        self._history.append(entry)
         self.persist()
         self.audit.record(f"balance-{action}", "balance", str(reason), cause=None)
         return dict(entry)
 
     def history(self, limit: int = 20) -> list[dict[str, Any]]:
-        if not self._last_action:
-            return []
-        return [
-            {
-                "action": self._last_action,
-                "volume_litres": 0.0,
-                "level_litres": self._level_litres,
-                "reason": "",
-                "timestamp": self.clock.timestamp(),
-            }
-        ][-max(0, int(limit)) :]
+        return [dict(item) for item in self._history[-max(0, int(limit)) :]]
 
     def snapshot(self) -> dict[str, Any]:
         return {

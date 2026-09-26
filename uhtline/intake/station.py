@@ -32,7 +32,7 @@ class IntakeStation:
         self.events = events
         self.audit = audit
         self._total_litres = 0.0
-        self._last_receipt: dict[str, Any] | None = None
+        self._receipts: list[dict[str, Any]] = []
         self._load()
 
     def _load(self) -> None:
@@ -40,11 +40,16 @@ class IntakeStation:
         if stored is None:
             return
         self._total_litres = float(stored.payload.get("total_litres", 0.0))
-        last = stored.payload.get("last_receipt")
-        self._last_receipt = None if last is None else dict(last)
+        receipts = stored.payload.get("receipts")
+        if receipts is None:
+            # Ledgers written before every receipt was kept only stored the
+            # latest one; carry it forward instead of dropping the record.
+            last = stored.payload.get("last_receipt")
+            receipts = [] if last is None else [last]
+        self._receipts = [dict(item) for item in receipts]
 
     def persist(self) -> None:
-        self.store.write(self.document, {"total_litres": self._total_litres, "last_receipt": self._last_receipt})
+        self.store.write(self.document, {"total_litres": self._total_litres, "receipts": self._receipts})
 
     def screen(self, volume_litres: float, temperature_c: float) -> dict[str, Any]:
         """Report whether a delivery would be accepted, without changing state."""
@@ -93,15 +98,17 @@ class IntakeStation:
             "reason": str(reason),
             "recorded_at": record.timestamp,
         }
-        self._last_receipt = receipt
+        self._receipts.append(receipt)
         self.persist()
         self.audit.record("intake", batch, f"{volume:g} L accepted", cause=None)
         return {"receipt": receipt, "staged": record.as_dict(), "total_litres": self._total_litres}
 
     def require_receipt(self, batch_id: str) -> dict[str, Any]:
-        if self._last_receipt is None:
-            raise StateError("no intake receipt has been recorded", batch=str(batch_id))
-        return dict(self._last_receipt)
+        label = str(batch_id)
+        for receipt in reversed(self._receipts):
+            if receipt.get("batch_id") == label:
+                return dict(receipt)
+        raise StateError("no intake receipt has been recorded for the batch", batch=label)
 
     def total_litres(self) -> float:
         return self._total_litres
@@ -109,7 +116,8 @@ class IntakeStation:
     def snapshot(self) -> dict[str, Any]:
         return {
             "total_litres": self._total_litres,
-            "latest": None if self._last_receipt is None else dict(self._last_receipt),
+            "latest": None if not self._receipts else dict(self._receipts[-1]),
+            "recent": [dict(item) for item in self._receipts[-5:]],
         }
 
 
